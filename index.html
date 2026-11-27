@@ -1,0 +1,400 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Тактическая Дуэль Онлайн</title>
+    <!-- Подключаем библиотеку PeerJS для онлайна -->
+    <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            background-color: #222;
+            color: white;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            margin: 0;
+            padding: 10px;
+            overflow: hidden; /* Чтобы не было скролла на телефоне */
+            touch-action: manipulation; /* Убирает задержку нажатия на телефоне */
+        }
+        canvas {
+            background-color: #fff;
+            border: 4px solid #000;
+            max-width: 90vw;
+            max-height: 60vh;
+        }
+        .ui-panel {
+            display: flex;
+            justify-content: space-between;
+            width: 100%;
+            max-width: 500px;
+            margin-bottom: 10px;
+            font-size: 14px;
+            font-weight: bold;
+            text-align: center;
+        }
+        .red-text { color: #ff4d4d; }
+        .blue-text { color: #4da6ff; }
+        
+        /* Стили для мобильного управления */
+        .mobile-controls {
+            display: flex;
+            justify-content: space-between;
+            width: 100%;
+            max-width: 500px;
+            margin-top: 10px;
+        }
+        .d-pad {
+            display: grid;
+            grid-template-columns: repeat(3, 50px);
+            grid-template-rows: repeat(3, 50px);
+            gap: 5px;
+        }
+        .action-buttons {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            justify-content: center;
+        }
+        button {
+            background-color: #444;
+            color: white;
+            border: 2px solid #666;
+            border-radius: 10px;
+            font-size: 18px;
+            font-weight: bold;
+            cursor: pointer;
+            user-select: none;
+        }
+        button:active { background-color: #777; }
+        .btn-up { grid-column: 2; grid-row: 1; }
+        .btn-left { grid-column: 1; grid-row: 2; }
+        .btn-down { grid-column: 2; grid-row: 3; }
+        .btn-right { grid-column: 3; grid-row: 2; }
+        .btn-shoot { background-color: #d32f2f; height: 50px; width: 80px; }
+        .btn-reload { background-color: #fbc02d; color: black; height: 50px; width: 80px; }
+        
+        /* Онлайн меню */
+        #online-menu {
+            position: absolute;
+            top: 50%; left: 50%;
+            transform: translate(-50%, -50%);
+            background: #333;
+            padding: 20px;
+            border-radius: 10px;
+            text-align: center;
+            border: 2px solid #555;
+            z-index: 10;
+        }
+        #online-menu input { padding: 8px; margin: 10px 0; width: 200px; font-size: 16px; }
+        .hidden { display: none !important; }
+    </style>
+</head>
+<body>
+
+    <!-- Меню онлайн подключения -->
+    <div id="online-menu">
+        <h3>Сетевая игра</h3>
+        <button onclick="hostGame()" style="padding: 10px; width: 100%; margin-bottom: 10px;">Создать игру (Хост)</button>
+        <hr style="border-color: #555;">
+        <input type="text" id="roomIdInput" placeholder="Введите ID комнаты">
+        <button onclick="joinGame()" style="padding: 10px; width: 100%;">Подключиться</button>
+        <button onclick="startLocalGame()" style="padding: 10px; width: 100%; margin-top: 15px; background: #555;">Играть локально</button>
+        <p id="connection-status" style="margin-top: 10px; font-size: 12px; color: #aaa;"></p>
+    </div>
+
+    <div class="ui-panel">
+        <div id="player1UI" class="red-text">Игрок 1 (Красный)<br>HP: 3 | П: 3</div>
+        <div id="turnUI">Ожидание...</div>
+        <div id="player2UI" class="blue-text">Игрок 2 (Синий)<br>HP: 3 | П: 3</div>
+    </div>
+
+    <canvas id="gameCanvas" width="500" height="500"></canvas>
+
+    <!-- Мобильное управление -->
+    <div class="mobile-controls">
+        <div class="d-pad">
+            <button class="btn-up" onmousedown="movePlayer(0, -1)" ontouchstart="movePlayer(0, -1)">▲</button>
+            <button class="btn-left" onmousedown="movePlayer(-1, 0)" ontouchstart="movePlayer(-1, 0)">◀</button>
+            <button class="btn-down" onmousedown="movePlayer(0, 1)" ontouchstart="movePlayer(0, 1)">▼</button>
+            <button class="btn-right" onmousedown="movePlayer(1, 0)" ontouchstart="movePlayer(1, 0)">▶</button>
+        </div>
+        <div class="action-buttons">
+            <button class="btn-shoot" onmousedown="shoot()" ontouchstart="shoot()">ОГОНЬ</button>
+            <button class="btn-reload" onmousedown="reload()" ontouchstart="reload()">ПЕРЕЗАРЯД</button>
+        </div>
+    </div>
+
+    <script>
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        const cellSize = 100;
+        const gridSize = 5;
+
+        let players = [];
+        let currentPlayerIndex = 0;
+        let walls = [];
+        
+        // Онлайн переменные
+        let peer = null;
+        let conn = null;
+        let isHost = false;
+        let myPlayerId = 1; // 1 - Хост, 2 - Гость
+
+        // Инициализация
+        function initGame(isOnline = false) {
+            players = [
+                { id: 1, x: 0, y: 0, hp: 3, ammo: 3, color: '#ff4d4d', name: 'Красный' },
+                { id: 2, x: 4, y: 4, hp: 3, ammo: 3, color: '#4da6ff', name: 'Синий' }
+            ];
+            currentPlayerIndex = 0;
+            generateWalls();
+            updateUI();
+            draw();
+        }
+
+        function generateWalls() {
+            walls = [];
+            for (let i = 0; i < 8; i++) {
+                let wx = Math.floor(Math.random() * 4);
+                let wy = Math.floor(Math.random() * 5);
+                let isHoriz = Math.random() > 0.5;
+                if (isHoriz) {
+                    if (!(wx === 0 && wy === 0) && !(wx === 4 && wy === 4)) walls.push({ x: wx, y: wy, type: 'H' });
+                } else {
+                    let wxV = Math.floor(Math.random() * 5);
+                    let wyV = Math.floor(Math.random() * 4);
+                    if (!(wxV === 0 && wyV === 0) && !(wxV === 4 && wyV === 4)) walls.push({ x: wxV, y: wyV, type: 'V' });
+                }
+            }
+        }
+
+        function draw() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            ctx.strokeStyle = '#000';
+            ctx.lineWidth = 2;
+            for (let i = 0; i <= gridSize; i++) {
+                ctx.beginPath(); ctx.moveTo(i * cellSize, 0); ctx.lineTo(i * cellSize, canvas.height); ctx.stroke();
+                ctx.beginPath(); ctx.moveTo(0, i * cellSize); ctx.lineTo(canvas.width, i * cellSize); ctx.stroke();
+            }
+
+            ctx.strokeStyle = '#8bc34a';
+            ctx.lineWidth = 8;
+            ctx.lineCap = 'round';
+            walls.forEach(w => {
+                ctx.beginPath();
+                if (w.type === 'H') {
+                    ctx.moveTo(w.x * cellSize, (w.y + 0.5) * cellSize); ctx.lineTo((w.x + 1) * cellSize, (w.y + 0.5) * cellSize);
+                } else {
+                    ctx.moveTo((w.x + 0.5) * cellSize, w.y * cellSize); ctx.lineTo((w.x + 0.5) * cellSize, (w.y + 1) * cellSize);
+                }
+                ctx.stroke();
+            });
+
+            players.forEach(p => {
+                ctx.fillStyle = p.color;
+                ctx.beginPath();
+                let cx = p.x * cellSize + cellSize / 2;
+                let cy = p.y * cellSize + cellSize / 2;
+                ctx.arc(cx - 10, cy, 15, 0, Math.PI * 2);
+                ctx.arc(cx + 10, cy, 15, 0, Math.PI * 2);
+                ctx.fill();
+            });
+        }
+
+        function checkWallCollision(x1, y1, x2, y2) {
+            if (x2 > x1) return walls.some(w => w.type === 'H' && w.x === x1 && w.y === y1);
+            if (x2 < x1) return walls.some(w => w.type === 'H' && w.x === x2 && w.y === y1);
+            if (y2 > y1) return walls.some(w => w.type === 'V' && w.x === x1 && w.y === y1);
+            if (y2 < y1) return walls.some(w => w.type === 'V' && w.x === x1 && w.y === y2);
+            return false;
+        }
+
+        function movePlayer(dx, dy) {
+            // В онлайне ходить можно только в свой ход
+            if (conn && currentPlayerIndex !== (myPlayerId - 1)) return;
+
+            let p = players[currentPlayerIndex];
+            let newX = p.x + dx;
+            let newY = p.y + dy;
+
+            if (newX >= 0 && newX < gridSize && newY >= 0 && newY < gridSize) {
+                if (!checkWallCollision(p.x, p.y, newX, newY)) {
+                    p.x = newX;
+                    p.y = newY;
+                    draw();
+                    
+                    if (conn) sendData({ type: 'move', playerIndex: currentPlayerIndex, x: newX, y: newY });
+                    endTurn();
+                }
+            }
+        }
+
+        function hasLineOfSight(p1, p2) {
+            if (p1.x === p2.x) {
+                let minY = Math.min(p1.y, p2.y), maxY = Math.max(p1.y, p2.y);
+                for (let y = minY; y < maxY; y++) if (walls.some(w => w.type === 'V' && w.x === p1.x && w.y === y)) return false;
+            } else if (p1.y === p2.y) {
+                let minX = Math.min(p1.x, p2.x), maxX = Math.max(p1.x, p2.x);
+                for (let x = minX; x < maxX; x++) if (walls.some(w => w.type === 'H' && w.x === x && w.y === p1.y)) return false;
+            }
+            return true;
+        }
+
+        function shoot() {
+            if (conn && currentPlayerIndex !== (myPlayerId - 1)) return;
+            
+            let attacker = players[currentPlayerIndex];
+            let target = players[(currentPlayerIndex + 1) % 2];
+
+            if (attacker.ammo <= 0) { alert("Нет патронов!"); return; }
+            if (!hasLineOfSight(attacker, target)) { alert("Стена блокирует!"); return; }
+
+            let distance = Math.max(Math.abs(attacker.x - target.x), Math.abs(attacker.y - target.y));
+            let hitChance = 1 / distance;
+            
+            attacker.ammo--;
+            let isHit = Math.random() < hitChance;
+            
+            if (isHit) {
+                target.hp--;
+                alert(`ПОПАДАНИЕ! ${target.name} теряет HP.`);
+            } else {
+                alert(`ПРОМАХ! Шанс был 1/${distance}`);
+            }
+
+            if (target.hp <= 0) {
+                alert(`Игрок ${attacker.name} победил!`);
+                updateUI(); draw(); return;
+            }
+
+            // Синхронизация выстрела по сети
+            if (conn) sendData({ type: 'shoot', attackerIndex: currentPlayerIndex, isHit: isHit });
+            endTurn();
+        }
+
+        function reload() {
+            if (conn && currentPlayerIndex !== (myPlayerId - 1)) return;
+            players[currentPlayerIndex].ammo = 3;
+            if (conn) sendData({ type: 'reload', playerIndex: currentPlayerIndex });
+            endTurn();
+        }
+
+        function endTurn() {
+            currentPlayerIndex = (currentPlayerIndex + 1) % 2;
+            updateUI();
+            draw();
+        }
+
+        function updateUI() {
+            let p1 = players[0], p2 = players[1];
+            document.getElementById('player1UI').innerHTML = `Игрок 1<br>HP: ${p1.hp} | П: ${p1.ammo}`;
+            document.getElementById('player2UI').innerHTML = `Игрок 2<br>HP: ${p2.hp} | П: ${p2.ammo}`;
+            
+            let turnText = currentPlayerIndex === 0 ? "Ход: Игрок 1" : "Ход: Игрок 2";
+            if (conn) {
+                turnText = currentPlayerIndex === (myPlayerId - 1) ? "ВАШ ХОД" : "Ход противника";
+            }
+            document.getElementById('turnUI').innerText = turnText;
+            document.getElementById('turnUI').style.color = players[currentPlayerIndex].color;
+        }
+
+        // --- ЛОГИКА ОНЛАЙН (PEERJS) ---
+        
+        function sendData(data) {
+            if (conn && conn.open) conn.send(data);
+        }
+
+        function hostGame() {
+            isHost = true;
+            myPlayerId = 1;
+            document.getElementById('connection-status').innerText = "Создание комнаты...";
+            
+            peer = new Peer(); // Создаем Peer
+            peer.on('open', (id) => {
+                document.getElementById('connection-status').innerText = `Ваш ID: ${id}\nОжидание игрока...`;
+                initGame(true); // Инициализируем игру (Хост генерирует стены)
+            });
+
+            peer.on('connection', (connection) => {
+                conn = connection;
+                setupConnection();
+            });
+        }
+
+        function joinGame() {
+            const roomId = document.getElementById('roomIdInput').value;
+            if (!roomId) return alert("Введите ID");
+
+            isHost = false;
+            myPlayerId = 2;
+            document.getElementById('connection-status').innerText = "Подключение...";
+
+            peer = new Peer();
+            peer.on('open', () => {
+                conn = peer.connect(roomId);
+                setupConnection();
+            });
+        }
+
+        function setupConnection() {
+            conn.on('open', () => {
+                document.getElementById('online-menu').classList.add('hidden');
+                document.getElementById('connection-status').innerText = "Соединение установлено!";
+                
+                if (isHost) {
+                    // Хост отправляет карту стен гостю
+                    sendData({ type: 'init', walls: walls });
+                    initGame(true); // Игра начинается у хоста
+                }
+            });
+
+            conn.on('data', (data) => {
+                if (data.type === 'init') {
+                    walls = data.walls;
+                    initGame(true);
+                    document.getElementById('online-menu').classList.add('hidden');
+                } 
+                else if (data.type === 'move') {
+                    players[data.playerIndex].x = data.x;
+                    players[data.playerIndex].y = data.y;
+                    draw(); endTurn();
+                } 
+                else if (data.type === 'shoot') {
+                    players[data.attackerIndex].ammo--;
+                    if (data.isHit) players[(data.attackerIndex + 1) % 2].hp--;
+                    updateUI(); draw(); endTurn();
+                }
+                else if (data.type === 'reload') {
+                    players[data.playerIndex].ammo = 3;
+                    updateUI(); endTurn();
+                }
+            });
+
+            conn.on('close', () => {
+                alert("Соединение потеряно.");
+                location.reload();
+            });
+        }
+
+        function startLocalGame() {
+            document.getElementById('online-menu').classList.add('hidden');
+            initGame(false);
+        }
+
+        // Управление с клавиатуры
+        window.addEventListener('keydown', (e) => {
+            switch(e.key.toLowerCase()) {
+                case 'w': case 'arrowup': movePlayer(0, -1); break;
+                case 's': case 'arrowdown': movePlayer(0, 1); break;
+                case 'a': case 'arrowleft': movePlayer(-1, 0); break;
+                case 'd': case 'arrowright': movePlayer(1, 0); break;
+                case ' ': shoot(); e.preventDefault(); break;
+                case 'r': reload(); break;
+            }
+        });
+    </script>
+</body>
+</html>
